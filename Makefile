@@ -34,6 +34,9 @@ LDFLAGS_STATIC += $(shell $(PKGCONF) --static --libs ncurses)
 LDFLAGS_SHARED += $(shell $(PKGCONF) --libs libpcap)
 LDFLAGS_STATIC += $(shell $(PKGCONF) --static --libs libpcap)
 
+LDFLAGS_SHARED += $(shell $(PKGCONF) --libs uuid)
+LDFLAGS_STATIC += $(shell $(PKGCONF) --static --libs uuid)
+
 ifeq ($(MAKECMDGOALS),static)
 # check for broken pkg-config
 ifeq ($(shell echo $(LDFLAGS_STATIC) | grep 'whole-archive.*l:lib.*no-whole-archive'),)
@@ -43,6 +46,8 @@ endif
 endif
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API
+
+# CFLAGS += -g
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)

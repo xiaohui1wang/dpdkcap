@@ -162,6 +162,7 @@ int write_core(const struct core_write_config *config)
 	unsigned int packet_length, wire_packet_length, compressed_length;
 	unsigned int remaining_bytes;
 	int to_write;
+	long int total_to_write = 0;
 	int bytes_to_write;
 	uint64_t bpf_rc[DPDKCAP_WRITE_BURST_SIZE];
 	struct rte_mbuf *dequeued[DPDKCAP_WRITE_BURST_SIZE];
@@ -175,6 +176,8 @@ int write_core(const struct core_write_config *config)
 	int (*file_write_func)(void *, void *, int);
 	int (*file_close_func)(void *);
 	int task_idx;
+
+	long int data_len = 0;
 
 	//Init stats
 	*(config->stats) = (struct core_write_stats) {
@@ -196,7 +199,7 @@ int write_core(const struct core_write_config *config)
 		//Get time
 		gettimeofday(&tv, NULL);
 
-		check_scan_taskdir(config->taskdir, tv.tv_sec);
+		//check_scan_taskdir(config->taskdir, tv.tv_sec);
 		// TODO something clever so tasks dont explode if update changes compression
 
 		//Get packets from the ring
@@ -214,6 +217,10 @@ int write_core(const struct core_write_config *config)
 			rte_delay_us(2);
 			continue;
 		}
+
+		total_to_write += to_write;
+		// rte_pktmbuf_free_bulk(dequeued, to_write);
+		// continue;
 
 		for (task_idx = 0; task_idx < DPDKCAP_MAX_TASKS_PER_DIR;
 		     task_idx++) {
@@ -236,10 +243,10 @@ int write_core(const struct core_write_config *config)
 				file_close_func = (int (*)(void *))close_pcap;
 			}
 
-			if (task->bpf) {
-				rte_bpf_exec_burst(task->bpf, (void *)dequeued,
-						   bpf_rc, to_write);
-			}
+			// if (task->bpf) {
+			// 	rte_bpf_exec_burst(task->bpf, (void *)dequeued,
+			// 			   bpf_rc, to_write);
+			// }
 			// TODO fix stats
 			//Update stats
 			config->stats->packets += to_write;
@@ -248,18 +255,18 @@ int write_core(const struct core_write_config *config)
 			bool file_changed;
 			uint64_t tvns;
 			for (i = 0; i < to_write; i++) {
-				if (task->bpf) {
-					if (!bpf_rc[i]) {
-						// TODO stats
-						continue;
-					}
-				}
-				if (task->sampling) {
-					if (rte_rand_max(task->sampling)) {
-						// TODO stats
-						continue;
-					}
-				}
+				// if (task->bpf) {
+				// 	if (!bpf_rc[i]) {
+				// 		// TODO stats
+				// 		continue;
+				// 	}
+				// }
+				// if (task->sampling) {
+				// 	if (rte_rand_max(task->sampling)) {
+				// 		// TODO stats
+				// 		continue;
+				// 	}
+				// }
 				//Cast to packet
 				bufptr = dequeued[i];
 				wire_packet_length =
@@ -273,7 +280,7 @@ int write_core(const struct core_write_config *config)
 				//Truncate packet if needed
 				packet_length =
 				    MIN(task->snaplen, wire_packet_length);
-
+				
 				// Need to close existing file?
 				//
 				// expired output_rotate_seconds?
@@ -407,6 +414,7 @@ int write_core(const struct core_write_config *config)
 					remaining_bytes -= bytes_to_write;
 					compressed_length += written;
 					task->output_size += written;
+					data_len += bytes_to_write;
 				}
 
 				//Update stats
@@ -445,6 +453,8 @@ int write_core(const struct core_write_config *config)
 		}
 	}
 
+	printf("data_len-%d:%ld\n", config->stats->core_id, data_len);
+	printf("total_to_write-%d:%ld\n", config->stats->core_id, total_to_write);
 	RTE_LOG(INFO, DPDKCAP, "Closed writing core %d\n", rte_lcore_id());
 
 	return retval;

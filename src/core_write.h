@@ -6,7 +6,7 @@
 #include "tasks.h"
 
 #define DPDKCAP_OUTPUT_FILENAME_LENGTH 100
-#define DPDKCAP_WRITE_BURST_SIZE 256
+#define DPDKCAP_WRITE_BURST_SIZE 1024
 
 /* Writing core configuration */
 struct core_write_config {

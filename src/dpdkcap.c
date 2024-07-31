@@ -23,10 +23,13 @@
 #define STR1(x)  #x
 #define STR(x)  STR1(x)
 
-#define RX_DESC_DEFAULT 512
+// #define RX_DESC_DEFAULT 512
+#define RX_DESC_DEFAULT 4096
 
-#define NUM_MBUFS_DEFAULT 8192
-#define MBUF_CACHE_SIZE 256
+//#define NUM_MBUFS_DEFAULT 8192
+#define NUM_MBUFS_DEFAULT (1048576 * 2)
+//#define MBUF_CACHE_SIZE 256
+#define MBUF_CACHE_SIZE 512
 
 #define MAX_LCORES 1000
 
@@ -95,6 +98,8 @@ static struct argp_option options[] = {
 	 "Taskdir scan interval in seconds.", 0},
 	{0}
 };
+
+void print_stats2(void);
 
 // XXX TODO NUMA
 struct arguments {
@@ -326,6 +331,13 @@ static int port_init(uint8_t port,
 			rx_rings);
 		return -EINVAL;
 	}
+	RTE_LOG(ERR, DPDKCAP,
+			"AAAAAAAAAAAAAA-Port %d handle up to %d queues (%d "
+			"requested).\n", port, dev_info.max_rx_queues,
+			rx_rings);
+	RTE_LOG(ERR, DPDKCAP,
+		"BBBBBBBBBBBBBB-Port %d num_rxdesc: %d, max: %d, min: %d, align: %d .\n", port, num_rxdesc, dev_info.rx_desc_lim.nb_max, 
+			dev_info.rx_desc_lim.nb_min, dev_info.rx_desc_lim.nb_align);
 
 	/* Check if the number of requested RX descriptors is valid */
 	if (num_rxdesc > dev_info.rx_desc_lim.nb_max ||
@@ -344,8 +356,7 @@ static int port_init(uint8_t port,
 		port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
 		port_conf.rx_adv_conf.rss_conf.rss_key = NULL;
 		//port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_PROTO_MASK & dev_info.flow_type_rss_offloads;
-		port_conf.rx_adv_conf.rss_conf.rss_hf =
-		    dev_info.flow_type_rss_offloads;
+		port_conf.rx_adv_conf.rss_conf.rss_hf = dev_info.flow_type_rss_offloads;
 		//port_conf.rx_adv_conf.rss_conf.rss_hf = RTE_ETH_RSS_PROTO_MASK;
 	}
 
@@ -371,35 +382,76 @@ static int port_init(uint8_t port,
 	}
 
 	/* Stats bindings (if more than one queue) */
-	if (dev_info.max_rx_queues > 1) {
-		for (q = 0; q < rx_rings; q++) {
-			retval =
-			    rte_eth_dev_set_rx_queue_stats_mapping(port, q, q);
-			if (retval) {
-				RTE_LOG(WARNING, DPDKCAP,
-					"rte_eth_dev_set_rx_queue_stats_mapping(...):"
-					" %s\n", rte_strerror(-retval));
-				RTE_LOG(WARNING, DPDKCAP,
-					"The queues statistics mapping failed. The "
-					"displayed queue statistics are thus unreliable.\n");
-			}
-		}
-	}
+	// if (dev_info.max_rx_queues > 1) {
+	// 	for (q = 0; q < rx_rings; q++) {
+	// 		printf("Stats bindings,%d %d\n", dev_info.max_rx_queues, q);
+	// 		retval =
+	// 		    rte_eth_dev_set_rx_queue_stats_mapping(port, q, q);
+	// 		if (retval) {
+	// 			RTE_LOG(WARNING, DPDKCAP,
+	// 				"rte_eth_dev_set_rx_queue_stats_mapping(...):"
+	// 				" %s\n", rte_strerror(-retval));
+	// 			RTE_LOG(WARNING, DPDKCAP,
+	// 				"The queues statistics mapping failed. The "
+	// 				"displayed queue statistics are thus unreliable.\n");
+	// 		}
+	// 	}
+	// }
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	rte_eth_promiscuous_enable(port);
+
+	// Reset stats, may reset automatically
+	rte_eth_stats_reset (port);
 
 	/* Display the port MAC address. */
 	struct rte_ether_addr addr;
 	rte_eth_macaddr_get(port, &addr);
 	RTE_LOG(INFO, DPDKCAP,
 		"Port %u: MAC=%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8
-		":%02" PRIx8 ":%02" PRIx8 ", RXdesc/queue=%d, rx_capa=%#016x\n",
+		":%02" PRIx8 ":%02" PRIx8 ", RXdesc/queue=%d, rx_capa=%#016lx\n",
 		(unsigned)port, addr.addr_bytes[0], addr.addr_bytes[1],
 		addr.addr_bytes[2], addr.addr_bytes[3], addr.addr_bytes[4],
 		addr.addr_bytes[5], num_rxdesc, dev_info.rx_offload_capa);
 
 	return 0;
+}
+
+// ipackets 表示成功接收的数据包总数。
+// opackets 表示成功发送的数据包总数。
+// ibytes 表示成功接收的字节数总数。
+// obytes 表示成功发送的字节数总数。
+// imissed 表示硬件未能处理的接收数据包总数。这通常是由于硬件资源限制，例如接收队列满了，导致硬件无法接收更多的数据包。这个计数器通常反映了硬件级别的丢包，可能是因为硬件队列溢出或其他硬件相关的原因。
+// ierrors 表示接收过程中出现错误的数据包总数。这个计数器通常包括由于数据包损坏、CRC 错误、帧对齐错误等原因导致的接收错误。这些错误通常是由物理层或数据链路层的问题引起的。
+// oerrors 表示发送过程中出现错误的数据包总数。
+// rx_nombuf 表示接收时因缓冲区不足而丢弃的数据包总数。这个计数器反映了由于软件层面的缓冲区不足（例如，DPDK 应用程序没有足够的 mbufs 来存储接收到的数据包）导致的数据包丢失。
+// q_ipackets 表示每个队列接收到的数据包数。
+// q_opackets 表示每个队列发送的数据包数。
+// q_ibytes 表示每个队列接收到的字节数。
+// q_obytes 表示每个队列发送的字节数。
+// q_errors 表示每个队列接收过程中出现错误的数据包数。
+// ilbpackets 表示从环回接口（如虚拟函数到物理函数）成功接收的数据包总数。
+// olbpackets 表示发送到环回接口（如虚拟函数到物理函数）的数据包总数。
+// ilbbytes 表示从环回接口（如虚拟函数到物理函数）成功接收的字节数总数。
+// olbbytes 表示发送到环回接口（如虚拟函数到物理函数）的字节数总数。
+// 如果不调用 rte_eth_rx_burst，接收队列中的数据包不会被软件取出，这可能导致硬件接收队列填满。一旦队列满了，新到达的数据包就没有地方存储，因此硬件会丢弃这些数据包，这时 imissed 的计数会增加。
+void print_stats2(void){
+	struct rte_eth_stats stat;
+	int i;
+	uint64_t good_pkt = 0, miss_pkt = 0, error_pkt = 0, nombuf_pkt = 0;
+
+	/* Print per port stats */
+	for (i = 0; i < 1; i++){
+		rte_eth_stats_get(i, &stat);
+		good_pkt += stat.ipackets;
+		miss_pkt += stat.imissed;
+		error_pkt += stat.ierrors;
+		nombuf_pkt += stat.rx_nombuf;
+		printf("\nPORT: %2d Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.3f%%", i, stat.ipackets, stat.imissed, stat.ierrors, stat.rx_nombuf, stat.ipackets+stat.imissed, (float)stat.imissed/(stat.ipackets+stat.imissed)*100 );
+	}
+	printf("\n-------------------------------------------------");
+	printf("\nTOT:     Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.3f%%", good_pkt, miss_pkt, error_pkt, nombuf_pkt, good_pkt+miss_pkt, (float)miss_pkt/(good_pkt+miss_pkt)*100 );
+	printf("\n");
 }
 
 /*
@@ -411,6 +463,7 @@ static void signal_handler(int sig)
 		strsignal(sig), rte_lcore_id(),
 		rte_get_main_lcore() == rte_lcore_id()? " (MAIN CORE)" : "");
 	stop_all_sockets();
+	print_stats2();
 }
 
 /*
@@ -589,10 +642,10 @@ int main(int argc, char *argv[])
 
 		//Initialize buffer for writing to disk
 		sprintf(strbuf, "RING_POOL_P%d", port_id);
-		write_ring = rte_ring_create(strbuf,
-					     rte_align32pow2(arguments.
-							     nb_mbufs),
-					     socket_id, 0);
+		// write_ring = rte_ring_create(strbuf,
+		// 			     rte_align32pow2(arguments.
+		// 					     nb_mbufs),
+		// 			     socket_id, 0);
 
 		/* Writing cores */
 		for (j = 0; j < arguments.num_w_cores; j++) {
@@ -635,7 +688,8 @@ int main(int argc, char *argv[])
 				    arguments.rotate_seconds;
 				t->output_rotate_size =
 				    arguments.file_size_limit;
-				t->compression = !arguments.rotate_seconds;
+				// t->compression = !arguments.rotate_seconds;
+				t->compression = !arguments.no_compression;
 				t->snaplen = arguments.snaplen;
 				t->task_state = TASK_ACTIVE;
 			} else {
@@ -647,12 +701,12 @@ int main(int argc, char *argv[])
 			}
 
 			//Launch writing core
-			if (rte_eal_remote_launch
-			    ((lcore_function_t *) write_core, config,
-			     core_id) < 0)
-				rte_exit(EXIT_FAILURE,
-					 "Could not launch writing process on lcore %d.\n",
-					 core_id);
+			// if (rte_eal_remote_launch
+			//     ((lcore_function_t *) write_core, config,
+			//      core_id) < 0)
+			// 	rte_exit(EXIT_FAILURE,
+			// 		 "Could not launch writing process on lcore %d.\n",
+			// 		 core_id);
 
 			//Add the core to the list
 			lcoreid_list[nb_lcores] = core_id;
@@ -673,8 +727,10 @@ int main(int argc, char *argv[])
 
 		/* Capturing cores */
 		for (j = 0; j < arguments.per_port_c_cores; j++) {
-
 			core_id = get_core_on_socket(socket_id);
+            if (j % 2 == 1) {
+                core_id += 111;
+            }
 			if (core_id < 0)
 				rte_exit(EXIT_FAILURE,
 					 "Cannot get core on socket %d\n",
@@ -700,10 +756,9 @@ int main(int argc, char *argv[])
 			config->stats = cores_stats_capture_list[nb_lcores];
 			config->port = port_id;
 			config->queue = j;
+            config->queues = arguments.per_port_c_cores;
 			//Launch capture core
-			if (rte_eal_remote_launch
-			    ((lcore_function_t *) capture_core, config,
-			     core_id) < 0)
+			if (rte_eal_remote_launch((lcore_function_t *) capture_core2, config, core_id) < 0)
 				rte_exit(EXIT_FAILURE,
 					 "Could not launch capture process on lcore "
 					 "%d.\n", core_id);

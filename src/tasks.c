@@ -248,8 +248,8 @@ void check_scan_task(char *fn, int fd, struct stat *st, void *cbd)
 		if (!t->snaplen)
 			t->snaplen = PCAP_SNAPLEN_DEFAULT;
 
-		if (!(t->bpf_str[0] == 0x00))
-			compile_filter(t);
+		// if (!(t->bpf_str[0] == 0x00))
+		// 	compile_filter(t);
 
 		printf("TASKSCAN task %i from '%s' ACTIVE\n", task_idx, fn);
 		t->task_state = TASK_ACTIVE;

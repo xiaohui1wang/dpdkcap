@@ -2,8 +2,10 @@
 #define DPDKCAP_CORE_CAPTURE_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
-#define DPDKCAP_CAPTURE_BURST_SIZE 256
+// #define DPDKCAP_CAPTURE_BURST_SIZE 256
+#define DPDKCAP_CAPTURE_BURST_SIZE 4096
 
 /* Core configuration structures */
 struct core_capture_config {
@@ -12,6 +14,7 @@ struct core_capture_config {
 	struct core_capture_stats *stats;
 	uint8_t port;
 	uint8_t queue;
+    uint8_t queues;
 };
 
 /* Statistics structure */
@@ -23,5 +26,10 @@ struct core_capture_stats {
 
 /* Launches a capture task */
 int capture_core(const struct core_capture_config *config);
+
+/* Launches a capture task */
+int capture_core2(const struct core_capture_config *config);
+
+int capture_core3(const struct core_capture_config *config);
 
 #endif
