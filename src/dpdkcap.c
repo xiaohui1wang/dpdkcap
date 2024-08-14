@@ -13,11 +13,16 @@
 #include <rte_version.h>
 #include <rte_malloc.h>
 
+#include <unistd.h>
+
 #include "pcap.h"
 #include "numa.h"
 #include "core_write.h"
 #include "core_capture.h"
 #include "statistics.h"
+#include "timestamp.h"
+
+#include "pcap.h"
 #include "timestamp.h"
 
 #define STR1(x)  #x
@@ -99,7 +104,10 @@ static struct argp_option options[] = {
 	{0}
 };
 
+static int is_stop = 0;
+
 void print_stats2(void);
+void print_stats3(void);
 
 // XXX TODO NUMA
 struct arguments {
@@ -447,11 +455,47 @@ void print_stats2(void){
 		miss_pkt += stat.imissed;
 		error_pkt += stat.ierrors;
 		nombuf_pkt += stat.rx_nombuf;
-		printf("\nPORT: %2d Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.3f%%", i, stat.ipackets, stat.imissed, stat.ierrors, stat.rx_nombuf, stat.ipackets+stat.imissed, (float)stat.imissed/(stat.ipackets+stat.imissed)*100 );
+		printf("\nPORT: %2d Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.5f%%", i, stat.ipackets, stat.imissed, stat.ierrors, stat.rx_nombuf, stat.ipackets+stat.imissed, (float)stat.imissed/(stat.ipackets+stat.imissed)*100 );
 	}
 	printf("\n-------------------------------------------------");
-	printf("\nTOT:     Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.3f%%", good_pkt, miss_pkt, error_pkt, nombuf_pkt, good_pkt+miss_pkt, (float)miss_pkt/(good_pkt+miss_pkt)*100 );
+	printf("\nTOT:     Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.5f%%", good_pkt, miss_pkt, error_pkt, nombuf_pkt, good_pkt+miss_pkt, (float)miss_pkt/(good_pkt+miss_pkt)*100 );
 	printf("\n");
+}
+
+void print_stats3() {
+    FILE *file = fopen("stats_output.txt", "wb");
+    if (unlikely(!file)) {
+        printf("Failed to open status_output.txt file.\n");
+        return;
+    }
+    while (1) {
+        if (unlikely(is_stop)) {
+            break;
+        }
+        struct rte_eth_stats stat;
+        uint64_t good_pkt = 0, miss_pkt = 0, error_pkt = 0, nombuf_pkt = 0;
+        /* Print per port stats */
+        for (int i = 0; i < 1; i++) {
+            rte_eth_stats_get(i, &stat);
+            good_pkt += stat.ipackets;
+            miss_pkt += stat.imissed;
+            error_pkt += stat.ierrors;
+            nombuf_pkt += stat.rx_nombuf;
+            fprintf(file, "\nPORT: %2d Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.5f%%",
+                    i, stat.ipackets, stat.imissed, stat.ierrors, stat.rx_nombuf,
+                    stat.ipackets + stat.imissed,
+                    (float)stat.imissed / (stat.ipackets + stat.imissed) * 100);
+        }
+        fprintf(file, "\n-------------------------------------------------");
+        fprintf(file, "\nTOT:     Rx: %ld Drp: %ld Err: %ld NoBuf: %ld Tot: %ld Perc: %.5f%%",
+                good_pkt, miss_pkt, error_pkt, nombuf_pkt, good_pkt + miss_pkt,
+                (float)miss_pkt / (good_pkt + miss_pkt) * 100);
+        fprintf(file, "\n");
+
+        fflush(file);     // Flush the output to make sure it is written to the file
+        usleep(5000000);  // Wait for 5 seconds
+    }
+    fclose(file);  // Close the file to ensure the data is saved
 }
 
 /*
@@ -463,6 +507,7 @@ static void signal_handler(int sig)
 		strsignal(sig), rte_lcore_id(),
 		rte_get_main_lcore() == rte_lcore_id()? " (MAIN CORE)" : "");
 	stop_all_sockets();
+    is_stop = 1;
 	print_stats2();
 }
 
@@ -728,6 +773,7 @@ int main(int argc, char *argv[])
 		/* Capturing cores */
 		for (j = 0; j < arguments.per_port_c_cores; j++) {
 			core_id = get_core_on_socket(socket_id);
+            //printf("Got core id: %d\n", core_id);
             if (j % 2 == 1) {
                 core_id += 111;
             }
@@ -790,6 +836,8 @@ int main(int argc, char *argv[])
 		.queue_per_port = arguments.per_port_c_cores,
 		.log_file = arguments.log_file,
 	};
+
+    //print_stats3();
 
 	if (arguments.statistics) {
 		//End the capture when the interface returns

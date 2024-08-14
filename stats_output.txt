@@ -1,0 +1,4 @@
+
+PORT:  0 Rx: 0 Drp: 0 Err: 0 NoBuf: 0 Tot: 0 Perc: -nan%
+-------------------------------------------------
+TOT:     Rx: 0 Drp: 0 Err: 0 NoBuf: 0 Tot: 0 Perc: -nan%

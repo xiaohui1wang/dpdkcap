@@ -1,5 +1,6 @@
 #include "core_capture.h"
 
+#include <regex.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
@@ -9,7 +10,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <uuid/uuid.h>
-#include <regex.h>
 
 #include "pcap.h"
 #include "timestamp.h"
@@ -31,6 +31,7 @@ struct packet_info {
 
 void extract_packet_info(struct rte_mbuf *mbuf, struct packet_info *info);
 int check_rules(struct packet_info *info);
+void rename_metadata_file(const char *metadata_filename, struct timeval *tv);
 
 int compile_regex(regex_t *regex, const char *pattern);
 int match_with_precompiled_regex(const regex_t *regex, const char *str);
@@ -153,7 +154,6 @@ static int write_file2(FILE *file, void *src, size_t len) {
 
 static FILE *open_file(char *output_file) {
     FILE *file;
-    // Open file
     file = fopen(output_file, "w");
     if (unlikely(!file)) {
         RTE_LOG(ERR, DPDKCAP, "Core %d could not open '%s' in write mode: %d (%s)\n",
@@ -165,7 +165,6 @@ static FILE *open_file(char *output_file) {
 
 static int write_file(FILE *file, void *src, size_t len) {
     size_t retval;
-    // Write file
     retval = fwrite(src, 1, len, file);
     if (unlikely(retval != len)) {
         RTE_LOG(ERR, DPDKCAP, "Could not write into file: %d (%s)\n", errno, strerror(errno));
@@ -176,7 +175,6 @@ static int write_file(FILE *file, void *src, size_t len) {
 
 static int close_file(FILE *file) {
     int retval;
-    // Close file
     retval = fclose(file);
     if (unlikely(retval)) {
         RTE_LOG(ERR, DPDKCAP, "Could not close file: %d (%s)\n", errno, strerror(errno));
@@ -194,6 +192,7 @@ int capture_core2(const struct core_capture_config *config) {
     uint32_t linkspeed = 0;
     struct timeval tv;
     struct timeval pcap_pre_tv;
+    struct timeval metadata_pre_tv;
     uint64_t tvns;
     int i;
     int written;
@@ -214,7 +213,7 @@ int capture_core2(const struct core_capture_config *config) {
 
     void *output_buffer = NULL;
     struct pcap_packet_header header;
-    void *metadata_buffer;
+    void *metadata_buffer = NULL;
 
     struct rte_mbuf *bufptr;
     struct pcap_header pcp;
@@ -272,6 +271,26 @@ int capture_core2(const struct core_capture_config *config) {
         nb_rx = rte_eth_rx_burst(config->port, config->queue, bufs, DPDKCAP_CAPTURE_BURST_SIZE);
 
         if (unlikely(nb_rx == 0)) {
+            gettimeofday(&tv, NULL);
+            // PCAP Rotate by time
+            if (output_buffer != NULL && (tv.tv_sec - pcap_pre_tv.tv_sec) >= 60 * 5) {
+                close_file(output_buffer);
+                output_buffer = NULL;
+                // Rotate metadata when rotate PCAP
+                if (metadata_buffer != NULL) {
+                    close_file(metadata_buffer);
+                    rename_metadata_file(metadata_filename, &tv);
+                    metadata_buffer = NULL;
+                }
+            }
+
+            // Metadata rotate by time, 5 seconds
+            if (metadata_buffer != NULL && (tv.tv_sec - metadata_pre_tv.tv_sec) >= 5) {
+                close_file(metadata_buffer);
+                rename_metadata_file(metadata_filename, &tv);
+                metadata_buffer = NULL;
+            }
+
             // Note: If delay here, may increase drop rate. But if not delay here, may cause line
             // 226 issue above. ETHDEV: lcore 56 called rx_pkt_burst for not ready port 0
             // rte_delay_us(1);
@@ -322,26 +341,34 @@ int capture_core2(const struct core_capture_config *config) {
             tvns = (tv.tv_sec * NSEC_PER_SEC) + (tv.tv_usec * 1000);
             *timestamp_field(bufptr) = tvns;
 
-            // PCAP rotate by time
-            if (output_buffer != NULL && (tv.tv_sec - pcap_pre_tv.tv_sec) >= 60 * 5) {
+            // PCAP rotate by time, 30mins
+            if (output_buffer != NULL && (tv.tv_sec - pcap_pre_tv.tv_sec) >= 60 * 30) {
                 close_file(output_buffer);
                 output_buffer = NULL;
+                // Rotate metadata when rotate PCAP
+                close_file(metadata_buffer);
+                rename_metadata_file(metadata_filename, &tv);
+                metadata_buffer = NULL;
             }
 
-            // // PCAP rotete by file size
-            if (output_buffer != NULL && pcap_file_size >= 1073741824L * 64) {
-                file_close_pcap_func(output_buffer);
+            // PCAP rotete by file size, 128GB
+            if (output_buffer != NULL && pcap_file_size >= 1073741824L * 128) {
+                close_file(output_buffer);
                 output_buffer = NULL;
+                // Rotate metadata when rotate PCAP
+                close_file(metadata_buffer);
+                rename_metadata_file(metadata_filename, &tv);
+                metadata_buffer = NULL;
             }
 
-            // Open new file
+            // Open new PCAP file
             if (output_buffer == NULL) {
                 pcap_pre_tv.tv_sec = tv.tv_sec;
-                sprintf(output_filename, "/mnt/test/output_file_%d_%ld.pcap", rte_lcore_id(),
+                sprintf(output_filename, "/mnt/pcap_dir/output_file_%d_%ld.pcap", rte_lcore_id(),
                         tv.tv_sec);
 
                 // Reopen a file
-                output_buffer = file_open_pcap_func(output_filename);
+                output_buffer = open_file(output_filename);
                 if (unlikely(!output_buffer)) {
                     RTE_LOG(WARNING, DPDKCAP, "Core %d open(%s) failed.\n", rte_lcore_id(),
                             output_filename);
@@ -354,7 +381,7 @@ int capture_core2(const struct core_capture_config *config) {
                 pcap_header_init(&pcp, PCAP_SNAPLEN_DEFAULT);
 
                 // Write pcap header
-                written = file_write_pcap_func(output_buffer, &pcp, sizeof(struct pcap_header));
+                written = write_file(output_buffer, &pcp, sizeof(struct pcap_header));
                 if (unlikely(written < 0)) {
                     retval = -1;
                     goto cleanup;
@@ -363,8 +390,18 @@ int capture_core2(const struct core_capture_config *config) {
                 pcap_file_size = written;
             }
 
+            // Metadata rotate by time, 5 seconds
+            if (metadata_buffer != NULL && (tv.tv_sec - metadata_pre_tv.tv_sec) >= 5) {
+                close_file(metadata_buffer);
+                rename_metadata_file(metadata_filename, &tv);
+                metadata_buffer = NULL;
+            }
+
+            // Open new metadata file
             if (metadata_buffer == NULL) {
-                sprintf(metadata_filename, "/mnt/test/output_file_%d.csv", rte_lcore_id());
+                metadata_pre_tv.tv_sec = tv.tv_sec;
+                sprintf(metadata_filename, "/mnt/metadata_dir/output_file_%d_%ld.csv_%ld", rte_lcore_id(),
+                        pcap_pre_tv.tv_sec, tv.tv_sec);
                 metadata_buffer = file_open_metadata_func(metadata_filename);
                 if (unlikely(!metadata_buffer)) {
                     RTE_LOG(WARNING, DPDKCAP, "Core %d open(%s) failed.\n", rte_lcore_id(),
@@ -424,17 +461,18 @@ int capture_core2(const struct core_capture_config *config) {
             // char buffer[256];
             // int len =
             //     snprintf(buffer, sizeof(buffer), "%ld.%ld,%s,%s,%s,%s,%u,%u,%d,%d,%ld\n",
-            //              tv.tv_sec, tv.tv_usec, pkt_info.src_mac, pkt_info.dst_mac, pkt_info.src_ip,
-            //              pkt_info.dst_ip, pkt_info.src_port, pkt_info.dst_port,
+            //              tv.tv_sec, tv.tv_usec, pkt_info.src_mac, pkt_info.dst_mac,
+            //              pkt_info.src_ip, pkt_info.dst_ip, pkt_info.src_port, pkt_info.dst_port,
             //              pkt_info.protocol_l3, pkt_info.protocol_l4, pcap_offset);
-            //ssize_t written = file_write_metadata_func(metadata_buffer, buffer, len);
+            // ssize_t written = file_write_metadata_func(metadata_buffer, buffer, len);
             // if (written < 0) {
             //     perror("write");
             //     close(fd);
             //     return 1;
             // }
 
-            //fprintf(metadata_buffer, "1721916374.774767,50:a6:b7:97:23:53,40:a6:b7:97:23:53,192.168.1.44,192.168.2.44,30043,40043,2048,6,7674\n");
+            // fprintf(metadata_buffer,
+            // "1721916374.774767,50:a6:b7:97:23:53,40:a6:b7:97:23:53,192.168.1.44,192.168.2.44,30043,40043,2048,6,7674\n");
 
             pcap_offset += (packet_header_length + packet_length);
         }
@@ -452,7 +490,8 @@ cleanup:
     // Close metadata file
     if (metadata_buffer) {
         // file_close_metadata_func = (int (*)(void *))close_file;
-        file_close_metadata_func(metadata_buffer);
+        close_file(metadata_buffer);
+        rename_metadata_file(metadata_filename, &tv);
         metadata_buffer = NULL;
     }
 
@@ -463,6 +502,22 @@ cleanup:
     RTE_LOG(INFO, DPDKCAP, "Closed capture core %d (port %d)\n", rte_lcore_id(), config->port);
 
     return 0;
+}
+
+void rename_metadata_file(const char *metadata_filename, struct timeval *tv) {
+    char new_metadata_filename[1024] = {0};
+
+    char time_str[20];
+    snprintf(time_str, sizeof(time_str), "_%ld", (long)tv->tv_sec);
+    strcat(new_metadata_filename, metadata_filename);
+    strcat(new_metadata_filename, time_str);
+
+    int result = rename(metadata_filename, new_metadata_filename);
+    if (result == 0) {
+        printf("Succeed to update file.\n");
+    } else {
+        perror("Failed to update file.");
+    }
 }
 
 void extract_packet_info(struct rte_mbuf *mbuf, struct packet_info *info) {
@@ -524,7 +579,7 @@ int check_rules(struct packet_info *info) {
     //    return -1;
     // }
 
-    return 0; 
+    return 0;
 }
 
 // 对于端口和协议，你需要将它们转换为字符串，然后再进行匹配
@@ -543,6 +598,4 @@ int match_with_precompiled_regex(const regex_t *regex, const char *string) {
     return regexec(regex, string, 0, NULL, 0);
 }
 
-void free_regex(regex_t *regex) {
-    regfree(regex);
-}
+void free_regex(regex_t *regex) { regfree(regex); }

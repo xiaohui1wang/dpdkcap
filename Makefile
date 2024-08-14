@@ -47,7 +47,7 @@ endif
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 
-# CFLAGS += -g
+CFLAGS += -g
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
